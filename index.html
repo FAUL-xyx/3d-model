@@ -21,6 +21,7 @@
             border-radius: 8px;
             border: 2px solid #00d2ff;
             z-index: 10;
+            object-fit: cover;
         }
         #info {
             position: absolute;
@@ -40,14 +41,13 @@
         }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
 </head>
 <body>
 
     <div id="info">
         MODE: <span id="mode-label" class="mode-text">KOSMOS (Terbuka)</span><br>
-        <small>Arahkan kamera ke tangan</small>
+        <small id="status-text">Memuat kamera...</small>
     </div>
     
     <video id="webcam" autoplay playsinline muted></video>
@@ -63,7 +63,6 @@
         let handX = 0, handY = 0;
         let rotationAngle = 0;
 
-        // 1. SETUP THREE.JS (CANVAS 3D)
         function initThree() {
             scene = new THREE.Scene();
             camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -74,7 +73,6 @@
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
             document.body.appendChild(renderer.domElement);
 
-            // Generate bentuk-bentuk partikel
             generateShapes();
 
             currentPos = new Float32Array(posSpace);
@@ -98,20 +96,17 @@
             animate();
         }
 
-        // 2. FORMULA BENTUK PARTIKEL 3D
         function generateShapes() {
             posSpace = new Float32Array(NUM_PARTICLES * 3);
             posPlanet = new Float32Array(NUM_PARTICLES * 3);
             posHeart = new Float32Array(NUM_PARTICLES * 3);
 
-            // Kosmos / Random
             for (let i = 0; i < NUM_PARTICLES * 3; i += 3) {
                 posSpace[i] = (Math.random() - 0.5) * 10;
                 posSpace[i+1] = (Math.random() - 0.5) * 10;
                 posSpace[i+2] = (Math.random() - 0.5) * 10;
             }
 
-            // Saturnus (Bola Inti + Cincin)
             const numSphere = 600;
             for (let i = 0; i < NUM_PARTICLES; i++) {
                 const idx = i * 3;
@@ -133,7 +128,6 @@
                 }
             }
 
-            // Bentuk Hati
             for (let i = 0; i < NUM_PARTICLES; i++) {
                 const idx = i * 3;
                 const t = (Math.random() * 2 - 1) * Math.PI;
@@ -149,22 +143,18 @@
             }
         }
 
-        // 3. ANIMASI LOOP
         function animate() {
             requestAnimationFrame(animate);
 
-            // Smooth Movement Tangan
             handX += (targetHandX - handX) * 0.1;
             handY += (targetHandY - handY) * 0.1;
 
-            // Transisi bentuk partikel (Morphing)
             const positions = geometry.attributes.position.array;
             for (let i = 0; i < NUM_PARTICLES * 3; i++) {
                 positions[i] += (targetPos[i] - positions[i]) * 0.1;
             }
             geometry.attributes.position.needsUpdate = true;
 
-            // Rotasi berdasarkan mode
             if (currentMode === 1) rotationAngle += 0.005;
             else if (currentMode === 2) rotationAngle += 0.02;
             else if (currentMode === 3) rotationAngle += 0.015;
@@ -188,10 +178,90 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
         }
 
-        // 4. DETEKSI GESTUR DETEKSI TANGAN (MEDIAPIPE)
         function hitungModeGestur(landmarks) {
             const tips = [8, 12, 16, 20];
             const pips = [6, 10, 14, 18];
             let berdiri = [];
 
-            for (let i = 0; i < 4;
+            for (let i = 0; i < 4; i++) {
+                berdiri.push(landmarks[tips[i]].y < landmarks[pips[i]].y);
+            }
+
+            const jumlahJari = berdiri.filter(Boolean).length;
+
+            if (jumlahJari === 0) return 3; 
+            if (berdiri[0] && !berdiri[1] && !berdiri[2] && !berdiri[3]) return 2; 
+            return 1; 
+        }
+
+        function onResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                currentMode = hitungModeGestur(landmarks);
+
+                const wrist = landmarks[0];
+                targetHandX = (0.5 - wrist.x) * 10;
+                targetHandY = (0.5 - wrist.y) * 8;
+
+                const label = document.getElementById('mode-label');
+                if (currentMode === 1) {
+                    targetPos = posSpace;
+                    label.innerText = "KOSMOS (Terbuka)";
+                    particleSystem.material.color.setHex(0x00d2ff);
+                } else if (currentMode === 2) {
+                    targetPos = posPlanet;
+                    label.innerText = "SATURNUS (Telunjuk)";
+                    particleSystem.material.color.setHex(0xffaa00);
+                } else if (currentMode === 3) {
+                    targetPos = posHeart;
+                    label.innerText = "BENTUK HATI (Kepal)";
+                    particleSystem.material.color.setHex(0xff0066);
+                }
+            }
+        }
+
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        hands.onResults(onResults);
+
+        // NATIVE WEBCAM API INTEGRATION FOR MOBILE
+        const videoElement = document.getElementById('webcam');
+        const statusText = document.getElementById('status-text');
+
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'user', width: 480, height: 360 }
+                });
+                videoElement.srcObject = stream;
+                statusText.innerText = "Arahkan kamera ke tangan";
+                
+                videoElement.onloadedmetadata = () => {
+                    async function processFrame() {
+                        if (!videoElement.paused && !videoElement.ended) {
+                            await hands.send({ image: videoElement });
+                        }
+                        requestAnimationFrame(processFrame);
+                    }
+                    processFrame();
+                };
+            } catch (err) {
+                statusText.innerText = "Kamera diblokir / tidak terdeteksi";
+                alert("Izinkan akses kamera di browser HP Anda!");
+            }
+        }
+
+        initThree();
+        startCamera();
+    </script>
+</body>
+</html>
